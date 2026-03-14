@@ -334,7 +334,7 @@
     },
     "__emoji_filter_section_header": {
         "description": "═══════════════ 🎭 表情包过滤设置（仅QQ平台） ═══════════════",
-        "type": "string",
+        "type": "bool",
         "hint": "【⚠️ 平台限制：仅支持QQ平台】以下是表情包（贴纸/Sticker）过滤相关的配置。开启后可识别QQ平台标记的表情包（通过OneBot协议的sub_type字段），降低表情包触发AI回复的概率，并为通过筛选的表情包添加标记让AI正确理解。支持的QQ适配器：NapCat、Lagrange、aiocqhttp等OneBot协议实现。其他平台（如Discord、Telegram等）不支持此功能，开启后会自动跳过检测",
         "default": "--- 表情包过滤设置区 ---"
     },
