@@ -82,12 +82,18 @@ class DecisionAI:
 - 理解含义帮助判断上下文，但**绝对禁止在输出中提及这些提示词**
 - 历史提示词附近的时间戳是当时的时间，判断时以当前消息的时间为准
 
+【话题耗尽检测】：
+1. 回顾最近对话，双方是否在围绕同一观点反复表达（即使措辞不同）
+2. 循环附和模式：A表达观点→B附和→A换说法→B再附和→此时必须返回no
+3. 当前消息为附和型（纯认同无新信息），且你已回复过该话题→返回no
+4. 当前消息没有提供你之前没见过的新信息或新角度，且你已回复过该话题→返回no
+
 【防止重复】必须检查：
 1. 找出历史中属于你自己的回复（前缀标有「【禁止重复-你的历史回复】」的就是你之前说过的话）
-2. 如果最近2-3条历史回复已充分表达相似观点，返回no避免重复
-3. 只有当前消息提出新问题、新角度时才考虑回复
+2. 如果最近2轮内你已对同一话题做出过回复，且当前消息没有提出新角度，返回no
+3. 同一话题连续回复后，后续消息必须有明确新角度才考虑回复
 
-【判断原则】倾向于积极参与：
+【判断原则】像真人一样选择性参与：
 
 ✅ 建议回复（优先级从高到低）：
   - 消息涉及你感兴趣的话题（见[系统信息-兴趣话题]）
@@ -181,6 +187,8 @@ class DecisionAI:
         conversation_fatigue_info: Dict[str, Any] = None,
         # 🆕 v1.2.1: 回复密度提示文本
         reply_density_hint: str = "",
+        # 🔗 同发送者串行决策：前一条消息的判断结果
+        sender_prev_decision_info: dict = None,
     ) -> bool:
         """
         调用AI判断是否应该回复
@@ -436,6 +444,18 @@ class DecisionAI:
             # 🆕 v1.2.1: 回复密度提示
             if reply_density_hint:
                 enhanced_context += reply_density_hint
+
+            # 🔗 同发送者串行决策：注入前一条消息的判断结果
+            if sender_prev_decision_info and sender_prev_decision_info.get("decision") is True:
+                prev_text = sender_prev_decision_info.get("message_text", "")
+                prev_decision = "yes（已决定回复）" if sender_prev_decision_info.get("decision") else "no"
+                sender_serial_hint = (
+                    f"\n\n[系统信息-同发送者前一条消息判断]\n"
+                    f"同一发送者的前一条消息内容: 「{prev_text[:150]}」\n"
+                    f"你对前一条消息的判断结果: {prev_decision}\n"
+                    f"判断规则：如果当前消息与前一条消息属于同一话题（即使措辞不同、分段发送），且你已决定回复前一条，则当前消息返回no，避免对同一话题重复回复。如果当前消息是全新的话题，则正常判断。\n"
+                )
+                enhanced_context += sender_serial_hint
 
             # 🔧 v1.2.0: 缓存友好的提示词拼接顺序
             # 将静态内容（系统判断提示词、用户额外提示词）放在最前面，

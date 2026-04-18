@@ -1523,6 +1523,18 @@ class ChatPlus(Star):
         # 格式: {chat_id: [{"content": "回复内容", "timestamp": 时间戳}]}
         # 最多保留最近5条回复，超过30分钟的自动清理
         self.recent_replies_cache = {}
+
+        # 🔗 同发送者串行决策配置
+        self.enable_sender_serial_decision = config.get("enable_sender_serial_decision", False)
+        self._SENDER_DECISION_CACHE_TTL = 30
+
+        # 同发送者串行决策状态
+        # per-sender锁: key=(chat_id, sender_id), value=asyncio.Lock
+        self._sender_decision_locks: dict = {}
+        self._sender_decision_lock_guard = asyncio.Lock()
+        # 判断结果缓存: key=(chat_id, sender_id), value={"decision": bool, "message_text": str, "timestamp": float}
+        self._sender_decision_cache: dict = {}
+
         self.raw_reply_cache = {}
 
         # 🔧 多轮工具调用支持：累积AI回复文本
@@ -2953,6 +2965,21 @@ class ChatPlus(Star):
             except Exception:
                 logger.warning("【会话重置】清空最近回复缓存失败", exc_info=True)
             try:
+                # 同发送者串行决策缓存（限定该会话）
+                keys_to_remove = [k for k in self._sender_decision_cache if k[0] == chat_id]
+                for k in keys_to_remove:
+                    del self._sender_decision_cache[k]
+                lock_keys_to_remove = [k for k in self._sender_decision_locks if k[0] == chat_id]
+                for k in lock_keys_to_remove:
+                    del self._sender_decision_locks[k]
+                if keys_to_remove or lock_keys_to_remove:
+                    logger.info(
+                        "【会话重置】已清空同发送者串行决策缓存 chat_id=%s, 清理条目=%d, 清理锁=%d",
+                        chat_id, len(keys_to_remove), len(lock_keys_to_remove),
+                    )
+            except Exception:
+                logger.warning("【会话重置】清空同发送者串行决策缓存失败", exc_info=True)
+            try:
                 # "回复后戳一戳"追踪记录（限定该会话）
                 k = str(chat_id)
                 if (
@@ -3244,6 +3271,8 @@ class ChatPlus(Star):
                 replies_total = sum(len(v) for v in self.recent_replies_cache.values())
                 self.recent_replies_cache.clear()
                 self.raw_reply_cache.clear()
+                self._sender_decision_cache.clear()
+                self._sender_decision_locks.clear()
                 self._pending_bot_replies.clear()
                 self._agent_done_flags.clear()
 
@@ -3682,6 +3711,7 @@ class ChatPlus(Star):
         image_urls: Optional[List[str]] = None,
         matched_trigger_keyword: str = "",  # 🆕 v1.2.0: 匹配到的触发关键词
         original_message_text: str = "",  # 🆕 v1.2.0: 原始消息文本（用于关键词检测）
+        sender_prev_decision_info: dict = None,  # 🔗 同发送者串行决策：前一条消息的判断结果
     ) -> bool:
         """
         执行AI决策判断（在处理完消息内容后）
@@ -3985,6 +4015,7 @@ class ChatPlus(Star):
                 conversation_fatigue_info=conversation_fatigue_info,
                 # 🆕 v1.2.1: 传递回复密度提示
                 reply_density_hint=reply_density_hint,
+                sender_prev_decision_info=sender_prev_decision_info,
             )
             # 🐛 修复：不要在这里删除缓存！
             # pre_decision 模式下，缓存的上下文（已植入记忆）需要在生成回复时使用
@@ -3994,6 +4025,15 @@ class ChatPlus(Star):
             if self.debug_mode:
                 _decision_elapsed = time.time() - _decision_start
                 logger.info(f"【步骤9】决策AI判断完成，耗时: {_decision_elapsed:.2f}秒")
+
+            # 🔗 同发送者串行决策：记录判断结果
+            sender_id_for_cache = str(event.get_sender_id())
+            cache_key_for_sender = (chat_id, sender_id_for_cache)
+            self._sender_decision_cache[cache_key_for_sender] = {
+                "decision": should_reply,
+                "message_text": original_message_text or formatted_context[:200],
+                "timestamp": time.time(),
+            }
 
             if not should_reply:
                 logger.info("决策AI判断: 不应该回复此消息")
@@ -6858,17 +6898,47 @@ class ChatPlus(Star):
                     "【步骤7】新成员入群消息(skip_all模式)，跳过AI决策，强制处理"
                 )
         else:
-            # 🆕 v1.2.0: 传递匹配到的触发关键词
-            # 🆕 v1.2.0: 传递原始消息文本用于关键词检测
-            should_reply = await self._check_ai_decision(
-                event,
-                formatted_context,
-                is_at_message,
-                has_trigger_keyword,
-                merged_image_urls,
-                matched_trigger_keyword=matched_trigger_keyword,
-                original_message_text=original_message_text,
-            )
+            # 🔗 同发送者串行决策保护
+            sender_id = str(event.get_sender_id())
+            sender_decision_key = (chat_id, sender_id)
+            _sender_serial_decision_guard = None
+            _sender_prev_decision_info = None
+
+            if self.enable_sender_serial_decision and not is_at_message and not has_trigger_keyword:
+                async with self._sender_decision_lock_guard:
+                    if sender_decision_key not in self._sender_decision_locks:
+                        self._sender_decision_locks[sender_decision_key] = asyncio.Lock()
+                _sender_serial_decision_guard = self._sender_decision_locks[sender_decision_key]
+
+                now_ts = time.time()
+                cached = self._sender_decision_cache.get(sender_decision_key)
+                if cached and (now_ts - cached.get("timestamp", 0)) < self._SENDER_DECISION_CACHE_TTL:
+                    _sender_prev_decision_info = cached
+                else:
+                    self._sender_decision_cache.pop(sender_decision_key, None)
+
+            if _sender_serial_decision_guard is not None:
+                async with _sender_serial_decision_guard:
+                    should_reply = await self._check_ai_decision(
+                        event,
+                        formatted_context,
+                        is_at_message,
+                        has_trigger_keyword,
+                        merged_image_urls,
+                        matched_trigger_keyword=matched_trigger_keyword,
+                        original_message_text=original_message_text,
+                        sender_prev_decision_info=_sender_prev_decision_info if self.enable_sender_serial_decision else None,
+                    )
+            else:
+                should_reply = await self._check_ai_decision(
+                    event,
+                    formatted_context,
+                    is_at_message,
+                    has_trigger_keyword,
+                    merged_image_urls,
+                    matched_trigger_keyword=matched_trigger_keyword,
+                    original_message_text=original_message_text,
+                )
 
         if not should_reply:
             # 🆕 v1.2.0: AI决策判定不通过时，才将消息添加到缓存
