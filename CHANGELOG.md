@@ -10,26 +10,18 @@
 
 **提示词大规模精简**:
 - `SYSTEM_REPLY_PROMPT`（reply_handler.py）：约100行 → 约30行
-- `SYSTEM_DECISION_PROMPT`（decision_ai.py）：约125行 → 约30行
-- 合并了 7 个重叠段落（上下文理解+核心原则+话题锚定+主语指代+严禁重复+同话题换表述+严禁元叙述）
+- `SYSTEM_DECISION_PROMPT`（decision_ai.py）：约125行 → 约40行
+- 合并了 7 个重叠段落
 - 删除「严禁元叙述」中的具体禁用词列表（避免反向强化）
 - 删除特殊标记百科全书（18行 → 4行）
 
-**消息注入文本精简**（message_processor.py）:
-- @触发、关键词触发、AI决策触发的系统提示均从多行缩至1-2行
-- @指向说明 提示精简
+**保留的原版精华（精简后回滚）**:
+- 保留「同话题换表述」具象示例
+- 保留「话题耗尽检测」+循环附和模式识别
+- 保留「空@与关键词触发」场景指导
+- 保留「冷却机制」信号枚举
 
-**其他精简**:
-- context_manager.py：历史消息头部/分隔线/窗口缓冲提示精简
-- memory_injector.py：背景信息每条从3行缩至1行，去掉尾部冗余指令
-- decision_ai.py：时间活跃度/兴趣话题/对话疲劳/同发送者提示均从多行缩至1-2行
-
-**修改文件**:
-- utils/reply_handler.py
-- utils/decision_ai.py
-- utils/message_processor.py
-- utils/context_manager.py
-- utils/memory_injector.py
+**修改文件**: reply_handler.py, decision_ai.py, message_processor.py, context_manager.py, memory_injector.py
 
 ---
 
