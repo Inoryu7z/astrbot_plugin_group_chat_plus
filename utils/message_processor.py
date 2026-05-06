@@ -95,18 +95,15 @@ class MessageProcessor:
                 mentioned_name = mention_info.get("mentioned_user_name", "")
 
                 if mentioned_id:
-                    # 构建系统提示（使用特殊标记【】，确保不会被MessageCleaner过滤）
-                    # 注意：措辞要对决策AI和回复AI都适用，不要加"请判断是否回复"这种话
                     mention_notice = (
-                        f"\n【@指向说明】这条消息通过@符号指定发送给其他用户"
+                        f"\n【@指向说明】消息指定发给其他用户"
                     )
                     if mentioned_name:
                         mention_notice += (
-                            f"（被@用户：{mentioned_name}，ID：{mentioned_id}）"
+                            f"（{mentioned_name}，ID:{mentioned_id}）"
                         )
                     else:
-                        mention_notice += f"（被@用户ID：{mentioned_id}）"
-                    mention_notice += "，并非发给你本人。"
+                        mention_notice += f"（ID:{mentioned_id}）"
                     mention_notice += f"\n【原始内容】{message_text}"
 
                     # 将原消息内容替换为包含系统提示的版本
@@ -167,42 +164,28 @@ class MessageProcessor:
 
                 # 根据触发方式添加不同的系统提示
                 if trigger_type == "at":
-                    # @消息触发
-                    # 🔧 修复：区分空@消息和带消息的@消息，给AI不同的提示
                     if is_empty_at:
-                        # 纯@消息（没有文字内容）
                         if recent_pending_summary:
-                            # 🆕 有近期缓存消息且时间差在阈值内：展示上下文，让AI自行判断意图
                             system_notice = (
-                                f"\n\n[系统提示]{sender_info_text} 单独@了你，没有附带任何文字内容。\n"
-                                f"以下是@你之前群里出现的最近几条消息（可能来自不同的人）：\n"
-                                f"{recent_pending_summary}\n\n"
-                                f"ta可能是想让你接上面某条消息，也可能只是叫你出来，或者别的什么——"
-                                f"结合上下文自己判断，用你自己的方式回应就好。"
+                                f"\n[系统提示] {sender_info_text} @了你（无附带文字）。"
+                                f"以下是@前最近的几条消息：\n{recent_pending_summary}\n"
+                                f"结合上下文自行判断意图并回应。"
                             )
                         else:
-                            # 无近期缓存（时间间隔过久或本就没有）：自然询问，无需搜索历史
                             system_notice = (
-                                f"\n\n[系统提示]{sender_info_text} 单独@了你，没有附带任何消息内容，"
-                                f"也没有特别需要接上的近期上下文，自然回应就好。"
+                                f"\n[系统提示] {sender_info_text} @了你（无附带文字），自然回应即可。"
                             )
                     else:
-                        # @消息+文字内容
                         system_notice = (
-                            f"\n\n[系统提示]注意，现在有人在直接@你并且给你发送了这条消息，"
-                            f"@你的那个人是{sender_info_text}"
+                            f"\n[系统提示] {sender_info_text} @了你并发送了以下消息"
                         )
                 elif trigger_type == "keyword":
-                    # 关键词触发：提示AI仔细观察上下文，自然判断如何回复
                     system_notice = (
-                        f"\n\n[系统提示]注意，你刚刚发现这条消息里面包含和你有关的信息，"
-                        f"这条消息的发送者是{sender_info_text}。\n"
-                        f"🔍 请仔细观察上下文和对话走向，结合发送者的实际意图，"
-                        f"像真人一样自然地决定怎么回复——不要只因为关键词就机械回应。"
+                        f"\n[系统提示] 消息包含与你相关的关键词。发送者：{sender_info_text}。"
+                        f"结合上下文自然回应，不因关键词机械回复。"
                     )
                 elif trigger_type == "ai_decision":
-                    # AI主动回复（中性描述，不预设结果）
-                    system_notice = f"\n\n[系统提示]注意，你看到了这条消息，发送这条消息的人是{sender_info_text}"
+                    system_notice = f"\n[系统提示] 发送者：{sender_info_text}"
                 else:
                     system_notice = ""
 
@@ -377,26 +360,18 @@ class MessageProcessor:
 
                 # 根据触发方式添加不同的系统提示
                 if trigger_type == "at":
-                    # @消息触发
-                    # 🔧 修复：区分空@消息和带消息的@消息，给AI不同的提示
                     if is_empty_at:
-                        # 纯@消息（没有文字内容）
                         system_notice = (
-                            f"\n\n[系统提示]{sender_info_text} 单独@了你，没有附带任何消息内容，"
-                            f"可能只是叫你出来，也可能是有事想说——自然回应就好。"
+                            f"\n[系统提示] {sender_info_text} @了你（无附带文字），自然回应即可。"
                         )
                     else:
-                        # @消息+文字内容
                         system_notice = (
-                            f"\n\n[系统提示]注意，现在有人在直接@你并且给你发送了这条消息，"
-                            f"@你的那个人是{sender_info_text}"
+                            f"\n[系统提示] {sender_info_text} @了你并发送了以下消息"
                         )
                 elif trigger_type == "keyword":
-                    # 关键词触发
-                    system_notice = f"\n\n[系统提示]注意，你刚刚发现这条消息里面包含和你有关的信息，这条消息的发送者是{sender_info_text}"
+                    system_notice = f"\n[系统提示] 消息包含与你相关的关键词。发送者：{sender_info_text}"
                 elif trigger_type == "ai_decision":
-                    # AI主动回复（中性描述，不预设结果）
-                    system_notice = f"\n\n[系统提示]注意，你看到了这条消息，发送这条消息的人是{sender_info_text}"
+                    system_notice = f"\n[系统提示] 发送者：{sender_info_text}"
                 else:
                     system_notice = ""
 

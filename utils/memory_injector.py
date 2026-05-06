@@ -395,9 +395,7 @@ class MemoryInjector:
 
                     # 详细格式：序号 + 内容 + 重要程度 + 时间
                     memory_text = (
-                        f"{i}. {content}\n"
-                        f"   重要程度: {importance_stars} ({star_count}/5)\n"
-                        f"   时间: {time_str}"
+                        f"{i}. [{'⭐' * star_count}] {time_str}: {content}"
                     )
                     memory_texts.append(memory_text)
 
@@ -550,7 +548,6 @@ class MemoryInjector:
 
         # 在消息末尾添加记忆部分
         injected_message = original_message + "\n\n=== 背景信息 ===\n" + memories
-        injected_message += "\n\n(这些信息可能对理解当前对话有帮助，请自然地融入到你的回答中，而不要明确提及)"
 
         logger.info(f"成功注入记忆: {len(memories)} 字符")
         if DEBUG_MODE:

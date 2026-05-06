@@ -1,4 +1,37 @@
-## 📝 更新日志
+##  更新日志
+
+### v1.2.1-prompt-opt (2026-05-07)
+
+**提示词全面精简与结构优化，修复多用户对话混淆问题**
+
+**核心修复 - 多用户发送者识别**:
+- 新增 `SENDER_HEADER_TEMPLATE`（reply_handler.py）和 `DECISION_SENDER_HEADER`（decision_ai.py），将发送者信息提到 prompt 最前面，AI 第一行就能看到回复对象
+- 去掉「只回复当前发送者」的机械限制，改为「优先回复当前，可顺带回应近期其他用户相关消息」
+
+**提示词大规模精简**:
+- `SYSTEM_REPLY_PROMPT`（reply_handler.py）：约100行 → 约30行
+- `SYSTEM_DECISION_PROMPT`（decision_ai.py）：约125行 → 约30行
+- 合并了 7 个重叠段落（上下文理解+核心原则+话题锚定+主语指代+严禁重复+同话题换表述+严禁元叙述）
+- 删除「严禁元叙述」中的具体禁用词列表（避免反向强化）
+- 删除特殊标记百科全书（18行 → 4行）
+
+**消息注入文本精简**（message_processor.py）:
+- @触发、关键词触发、AI决策触发的系统提示均从多行缩至1-2行
+- @指向说明 提示精简
+
+**其他精简**:
+- context_manager.py：历史消息头部/分隔线/窗口缓冲提示精简
+- memory_injector.py：背景信息每条从3行缩至1行，去掉尾部冗余指令
+- decision_ai.py：时间活跃度/兴趣话题/对话疲劳/同发送者提示均从多行缩至1-2行
+
+**修改文件**:
+- utils/reply_handler.py
+- utils/decision_ai.py
+- utils/message_processor.py
+- utils/context_manager.py
+- utils/memory_injector.py
+
+---
 
 ### v1.2.1 (Inoryu7z定制)
 

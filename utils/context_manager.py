@@ -1315,16 +1315,13 @@ class ContextManager:
                 if include_sender_info:
                     formatted_parts.append(
                         f"=== 历史消息上下文 ===\n"
-                        f"[重要提示] 以下每条历史消息均已标注发送者的名字和用户ID（格式：名字(ID:用户ID): 消息内容）。\n"
-                        f"其中 ID 为 {bot_id} 的消息是【你自己之前发出的回复】（前缀标有「【禁止重复-你的历史回复】」），你已经说过这些话了，绝对不能再重复相同或相似的内容。\n"
-                        f"其余 ID 的消息是【其他用户发送的消息】，是别人说的话，不是你说的。\n"
-                        f"群聊中可能有多个不同用户的发言，请仔细识别每条消息的发送者 ID，准确区分是谁在说话，不要混淆。"
+                        f"每条消息格式：名字(ID:用户ID): 内容 。"
+                        f"ID {bot_id} 前缀标有「【禁止重复-你的历史回复】」的是你自己发的，不要重复。"
                     )
                 else:
                     formatted_parts.append(
                         "=== 历史消息上下文 ===\n"
-                        "[重要提示] 以下历史消息中，前缀标有「【禁止重复-你的历史回复】」的消息是【你自己之前发出的回复】，你已经说过这些话了，绝对不能再重复。\n"
-                        "其余消息均为【其他用户发送的消息】，是别人说的话，不是你说的。请仔细区分。"
+                        "前缀标有「【禁止重复-你的历史回复】」的是你自己发的，不要重复。"
                     )
 
                 for msg in history_messages:
@@ -1437,10 +1434,10 @@ class ContextManager:
             formatted_parts.append("")  # 空行分隔
             formatted_parts.append("=" * 50)
             formatted_parts.append(
-                "=== 以上全部是历史消息，你已经处理过了，不要重复回答 ==="
+                "=== 以上全部为历史消息 ==="
             )
             formatted_parts.append(
-                "=== 【重要】以下是当前新消息（请优先关注这条消息的核心内容）==="
+                "=== 【当前新消息】优先回复这一条 ==="
             )
             formatted_parts.append("=" * 50)
             formatted_parts.append(current_message)
@@ -1451,13 +1448,7 @@ class ContextManager:
                 if window_buffered_messages:
                     formatted_parts.append("")
                     formatted_parts.append(
-                        "--- 以下是你收到这条消息后，同一用户或其他用户紧接着又发的消息 ---"
-                    )
-                    formatted_parts.append(
-                        "这些消息不一定是对你说的，请自行参考判断是否需要在回复中一并考虑。"
-                    )
-                    formatted_parts.append(
-                        "重要：这些追加消息的发送者可能与当前对话对象不同，请根据每条消息的发送者名字和ID仔细区分。"
+                        "--- 以下为当前消息之后紧接着的追加消息，可参考 ---"
                     )
 
                     # 按时间排序
