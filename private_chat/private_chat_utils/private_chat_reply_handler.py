@@ -454,8 +454,9 @@ class ReplyHandler:
             event.set_extra(PLUGIN_CUSTOM_PROMPT, full_prompt)
             # 存储图片 URL 列表
             event.set_extra(PLUGIN_IMAGE_URLS, image_urls)
-            # 🔧 存储插件自身的工具集（ToolSet），用于在 on_llm_request 钩子中恢复
-            # 新版 AstrBot 的 build_main_agent 会注入框架工具（shell/cron等），需要用插件的工具集替换
+            # 🔧 存储插件自身的工具集（ToolSet），用于在 on_llm_request 钩子中与框架工具合并
+            # 新版 AstrBot 的 build_main_agent 会注入框架工具（shell/cron等），
+            # on_llm_request 钩子会将此插件工具集合并到框架工具集中（而非替换），保留双方工具
             event.set_extra(PLUGIN_FUNC_TOOL, plugin_tool_set)
 
             # 🔧 提取当前用户消息原文（不含历史上下文），作为向量检索类插件的召回查询词

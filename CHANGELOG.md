@@ -1,5 +1,18 @@
 ##  更新日志
 
+### v1.2.2 (2026-06-24)
+
+**修复群聊中框架内置工具丢失问题（如 astrbot_execute_shell 不可用）**
+
+- **问题根因**: `on_llm_request` 钩子原实现用插件工具集直接替换 `req.func_tool`，导致 `build_main_agent` 注入的框架内置工具（shell/python/cron/send_message 等）全部丢失
+- **修复方案**: 改为合并模式 —— 保留框架注入的工具，同时加入插件注册的工具，同名工具由 `ToolSet.add_tool` 自动去重
+- **安全性保障**: 插件回复提示词中已有「仅在消息中包含对工具功能的明确请求时调用对应工具」的约束，可缓解 LLM 工具调用循环问题
+- **兼容性**: 对主动对话流程（`PLUGIN_FUNC_TOOL` 为非 ToolSet 类型时）保持原行为，不引入破坏性变更
+
+**修改文件**: main.py, utils/reply_handler.py, private_chat/private_chat_utils/private_chat_reply_handler.py, metadata.yaml
+
+---
+
 ### v1.2.1-prompt-opt (2026-05-07)
 
 **提示词全面精简与结构优化，修复多用户对话混淆问题**

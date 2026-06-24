@@ -148,7 +148,7 @@ from .private_chat import PrivateChatMain  # 🆕 私信功能主处理模块
     "chat_plus",
     "Him666233",
     "一个以AI读空气为主的群聊聊天效果增强插件",
-    "v1.2.1",
+    "v1.2.2",
     "https://github.com/Him666233/astrbot_plugin_group_chat_plus",
 )
 class ChatPlus(Star):
@@ -7338,14 +7338,22 @@ class ChatPlus(Star):
         req.prompt = plugin_prompt
         req.image_urls = plugin_image_urls
 
-        # 🔧 修复：用插件自身保存的工具集替换框架注入的工具
-        # 新版 AstrBot (>=4.14) 的 build_main_agent 会自动注入 shell/python/cron/send_message 等工具，
-        # 这些工具会导致 LLM 进入工具调用循环从而卡死。
-        # 旧版 AstrBot (<=4.13) 中 func_tool_manager 参数直接生效，不存在此问题。
-        # 这里统一恢复为插件保存的 ToolSet（由 reply_handler 中 get_full_tool_set() 获取），
-        # 确保两个版本行为一致：只保留插件注册的工具，移除框架自动注入的工具。
+        # 🔧 修复：合并插件工具集与框架内置工具集
+        # 新版 AstrBot (>=4.14) 的 build_main_agent 会自动注入 shell/python/cron/send_message 等
+        # 框架内置工具。原实现直接用插件工具集替换 req.func_tool，导致这些框架工具丢失
+        # （如 astrbot_execute_shell 在群聊中不可用）。
+        # 现改为合并：保留框架注入的工具，同时加入插件注册的工具。
+        # 插件回复提示词中已有"仅在消息中包含对工具功能的明确请求时调用对应工具"的约束，
+        # 可缓解原作者担心的 LLM 工具调用循环问题。
         plugin_tool_set = event.get_extra(PLUGIN_FUNC_TOOL)
-        req.func_tool = plugin_tool_set  # 可能是 ToolSet 或 None（获取失败时）
+        if plugin_tool_set is not None and hasattr(plugin_tool_set, "tools"):
+            if req.func_tool is None:
+                req.func_tool = plugin_tool_set
+            else:
+                # 将插件工具合并到框架工具集中（同名工具由 add_tool 去重，优先保留 active 的）
+                for tool in plugin_tool_set.tools:
+                    req.func_tool.add_tool(tool)
+        # 若 plugin_tool_set 为 None 或非 ToolSet 类型，保留框架注入的 req.func_tool 不变
 
         # 🔧 合并 system_prompt：插件基础 + 其他插件注入的内容
         if other_plugin_additions:
