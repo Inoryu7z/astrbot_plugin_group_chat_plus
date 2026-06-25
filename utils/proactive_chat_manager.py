@@ -152,6 +152,7 @@ class ProactiveChatManager:
     _max_context_messages: int = 20
     _include_timestamp: bool = True
     _include_sender_info: bool = True
+    _timestamp_threshold_minutes: int = 30
     # 记忆注入配置
     _enable_memory_injection: bool = False
     _memory_plugin_mode: str = "legacy"
@@ -315,6 +316,9 @@ class ProactiveChatManager:
         cls._max_context_messages = config["max_context_messages"]
         cls._include_timestamp = config["include_timestamp"]
         cls._include_sender_info = config["include_sender_info"]
+        cls._timestamp_threshold_minutes = config.get(
+            "timestamp_threshold_minutes", 30
+        )
         # 记忆注入配置
         cls._enable_memory_injection = config["enable_memory_injection"]
         cls._memory_plugin_mode = config["memory_plugin_mode"]
@@ -4172,6 +4176,7 @@ class ProactiveChatManager:
                 include_timestamp=cls._include_timestamp,
                 include_sender_info=cls._include_sender_info,
                 window_buffered_messages=window_buffered_msgs,
+                timestamp_threshold_minutes=cls._timestamp_threshold_minutes,
             )
 
             if debug_mode:

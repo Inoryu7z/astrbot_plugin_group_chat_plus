@@ -81,7 +81,7 @@ import json
 import os
 import shutil
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict
 from collections import OrderedDict
 import aiohttp
 from astrbot.api import logger
@@ -148,7 +148,7 @@ from .private_chat import PrivateChatMain  # 🆕 私信功能主处理模块
     "chat_plus",
     "Him666233",
     "一个以AI读空气为主的群聊聊天效果增强插件",
-    "v1.2.2",
+    "v1.2.3",
     "https://github.com/Him666233/astrbot_plugin_group_chat_plus",
 )
 class ChatPlus(Star):
@@ -215,6 +215,9 @@ class ChatPlus(Star):
 
         # === 消息格式配置 ===
         self.include_timestamp = config.get("include_timestamp", True)  # 包含时间戳
+        self.timestamp_threshold_minutes = config.get(
+            "timestamp_threshold_minutes", 30
+        )  # 时间戳显示阈值(分钟)
         self.include_sender_info = config.get(
             "include_sender_info", True
         )  # 包含发送者信息
@@ -1477,6 +1480,17 @@ class ChatPlus(Star):
         # 格式: {message_id: chat_id}
         self.processing_sessions = {}
 
+        # 🆕 v1.2.3: 同用户近期正在处理的消息临时存储（修复分段消息丢失问题）
+        # 当用户先发内容消息、紧接着发空@bot时，内容消息的缓存写入在AI决策之后（6-8秒），
+        # 而空@消息的上下文构建在处理早期，导致空@消息看不到前一条内容消息。
+        # 此字典在消息进入处理时立即写入，空@消息的上下文构建可立即读取，无需等待。
+        # 格式: {f"{chat_id}_{sender_id}": {content, sender_name, sender_id, timestamp, message_id, cleanup_at}}
+        self.recent_processing_messages: Dict[str, Dict] = {}
+        # 临时存储保留时长（秒）：处理完成后保留60秒，让后续空@消息有机会读到
+        self._recent_processing_ttl_seconds = 60
+        # 空@消息合并同用户消息的时间窗口（秒）：仅合并此窗口内的消息
+        self._recent_processing_merge_window_seconds = 600  # 10分钟
+
         # 🔧 并发控制锁，保护 processing_sessions 的检查-标记流程，避免竞态条件
         self.concurrent_lock = asyncio.Lock()
 
@@ -2558,6 +2572,22 @@ class ChatPlus(Star):
                 self._message_cache_snapshots.pop(_cleanup_message_id, None)
                 self._duplicate_blocked_messages.pop(_cleanup_message_id, None)
 
+            # 🆕 v1.2.3: 设置临时存储的延迟清理标记
+            # 不立即删除，而是标记 cleanup_at，保留60秒让后续空@消息有机会读取。
+            # 过期条目由下次 _process_message_content 写入时清理。
+            try:
+                _cleanup_sender_id = getattr(event, "_tmp_storage_sender_id", None)
+                _cleanup_chat_id = getattr(event, "_tmp_storage_chat_id", None)
+                if _cleanup_sender_id and _cleanup_chat_id:
+                    _cleanup_key = f"{_cleanup_chat_id}_{_cleanup_sender_id}"
+                    _entry = self.recent_processing_messages.get(_cleanup_key)
+                    if _entry and _entry.get("cleanup_at") is None:
+                        _entry["cleanup_at"] = (
+                            time.time() + self._recent_processing_ttl_seconds
+                        )
+            except Exception:
+                pass
+
     async def restart_core(self):
         """
         发送重启请求,重启AstrBot,并记录重启信息
@@ -3255,6 +3285,16 @@ class ChatPlus(Star):
                 )
             except Exception:
                 logger.warning("【插件重置】清空处理中标记失败", exc_info=True)
+            try:
+                # 🆕 v1.2.3: 同用户近期处理消息临时存储
+                recent_proc_count = len(self.recent_processing_messages)
+                self.recent_processing_messages.clear()
+                logger.info(
+                    "【插件重置】已清空临时消息存储 清理条目=%s",
+                    recent_proc_count,
+                )
+            except Exception:
+                logger.warning("【插件重置】清空临时消息存储失败", exc_info=True)
             try:
                 # 指令标记缓存（跨处理器通信用）
                 command_count = len(self.command_messages)
@@ -4382,6 +4422,43 @@ class ChatPlus(Star):
             # - 判断no：消息只会保存不会发给回复AI，提示词在保存时也正确
             trigger_type = "ai_decision"
 
+        # 🆕 v1.2.3: 写入同用户近期处理消息临时存储（修复分段消息丢失问题）
+        # 在消息内容准备好后立即写入，不等AI决策。
+        # 这样当用户紧接着发空@bot时，空@消息能立即读到这条消息的内容。
+        try:
+            _sender_id = event.get_sender_id()
+            _sender_name = event.get_sender_name() or f"用户(ID:{_sender_id})"
+            _storage_key = f"{chat_id}_{_sender_id}"
+            # 缓存到 event 属性上，供 on_group_message 的 finally 块设置延迟清理标记
+            event._tmp_storage_sender_id = _sender_id
+            event._tmp_storage_chat_id = chat_id
+            # 先清理过期的临时存储条目（cleanup_at 已过期的）
+            _now = time.time()
+            _expired_keys = [
+                k
+                for k, v in self.recent_processing_messages.items()
+                if v.get("cleanup_at") and v["cleanup_at"] < _now
+            ]
+            for _ek in _expired_keys:
+                self.recent_processing_messages.pop(_ek, None)
+            # 写入当前消息（仅写入有实际内容的非空@消息，避免空@自身污染存储）
+            if not is_empty_at and processed_message and processed_message.strip():
+                self.recent_processing_messages[_storage_key] = {
+                    "content": processed_message.strip(),
+                    "sender_name": _sender_name,
+                    "sender_id": _sender_id,
+                    "timestamp": _now,
+                    "message_id": current_message_id,  # 已在前面通过 _get_message_id 获取
+                    "cleanup_at": None,  # 处理完成后才设置清理时间
+                }
+                if self.debug_mode:
+                    logger.info(
+                        f"  [临时存储] 写入 key={_storage_key}, 内容长度={len(processed_message.strip())}"
+                    )
+        except Exception as _e:
+            if self.debug_mode:
+                logger.warning(f"  [临时存储] 写入失败(忽略): {_e}")
+
         # 🆕 空@时：提取最近缓存消息摘要，直接嵌入提示词，让AI无需在长历史中搜索
         # ⏱️ 时间差阈值：超过此时间（秒）则认为间隔过久，不拼接上下文，让AI自然询问
         EMPTY_AT_MAX_TIME_GAP = 600  # 10分钟
@@ -4434,6 +4511,42 @@ class ChatPlus(Star):
                                 parts.append(f"  - {sender_name}：{content[:150]}")
                     if parts:
                         recent_pending_summary = "\n".join(parts)
+
+        # 🆕 v1.2.3: 空@时从临时存储补充读取同用户正在处理的消息（修复分段消息丢失）
+        # 场景：用户先发内容消息（消息1），紧接着发空@bot（消息2）。
+        # 消息1的缓存写入在AI决策后（6-8秒），此时可能还没进缓存，但已在临时存储中。
+        # 此逻辑从临时存储读取消息1的内容，补充到 recent_pending_summary。
+        if is_empty_at:
+            try:
+                _sender_id = event.get_sender_id()
+                _storage_key = f"{chat_id}_{_sender_id}"
+                _proc_msg = self.recent_processing_messages.get(_storage_key)
+                if _proc_msg and _proc_msg.get("content"):
+                    # 检查时间窗口：仅合并合并窗口内的消息
+                    _proc_ts = _proc_msg.get("timestamp", 0)
+                    _time_gap = time.time() - float(_proc_ts)
+                    if _time_gap <= self._recent_processing_merge_window_seconds:
+                        _proc_content = _proc_msg["content"].strip()
+                        _proc_sender = _proc_msg.get("sender_name") or f"用户(ID:{_sender_id})"
+                        _proc_line = f"  - {_proc_sender}：{_proc_content[:150]}"
+                        if recent_pending_summary:
+                            # 临时存储的消息是最近的，放在摘要最前面
+                            recent_pending_summary = _proc_line + "\n" + recent_pending_summary
+                        else:
+                            recent_pending_summary = _proc_line
+                        if self.debug_mode:
+                            logger.info(
+                                f"  [临时存储] 空@消息从临时存储补充读取: key={_storage_key}, "
+                                f"时间差={_time_gap:.1f}s, 内容长度={len(_proc_content)}"
+                            )
+                    else:
+                        if self.debug_mode:
+                            logger.info(
+                                f"  [临时存储] 临时存储消息时间差 {_time_gap:.0f}s 超过合并窗口，跳过"
+                            )
+            except Exception as _e:
+                if self.debug_mode:
+                    logger.warning(f"  [临时存储] 空@读取失败(忽略): {_e}")
 
         message_text_for_ai = MessageProcessor.add_metadata_to_message(
             event,
@@ -4950,6 +5063,7 @@ class ChatPlus(Star):
             include_timestamp=self.include_timestamp,
             include_sender_info=self.include_sender_info,
             window_buffered_messages=window_buffered_msgs,
+            timestamp_threshold_minutes=self.timestamp_threshold_minutes,
         )
 
         if self.debug_mode:
@@ -7209,6 +7323,7 @@ class ChatPlus(Star):
                     window_buffered_messages=self.cache_manager.get_window_buffered_messages(
                         chat_id
                     ),
+                    timestamp_threshold_minutes=self.timestamp_threshold_minutes,
                 )
                 emoji_marker_applied = True
                 if self.debug_mode:

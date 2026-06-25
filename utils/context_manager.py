@@ -1292,6 +1292,7 @@ class ContextManager:
         include_timestamp: bool = True,
         include_sender_info: bool = True,
         window_buffered_messages: list = None,
+        timestamp_threshold_minutes: int = 30,
     ) -> str:
         """
         将历史消息格式化为AI可理解的文本
@@ -1303,6 +1304,9 @@ class ContextManager:
             include_timestamp: 是否包含时间戳（默认为True）
             include_sender_info: 是否包含发送者信息（默认为True）
             window_buffered_messages: 窗口缓冲消息列表（用于拼接到当前消息下方）
+            timestamp_threshold_minutes: 时间戳显示阈值（分钟）。
+                当历史消息与当前时间差超过此值时才显示时间戳，避免连续对话被时间戳污染。
+                设为 0 表示始终显示时间戳（与旧版行为一致）。
 
         Returns:
             格式化后的文本
@@ -1391,8 +1395,28 @@ class ContextManager:
                     # 构建消息前缀部分
                     prefix_parts = []
 
-                    # 添加时间戳（如果启用，且不是bot自己的消息，避免AI模仿时间戳格式）
-                    if include_timestamp and time_str and not is_bot:
+                    # 添加时间戳（如果启用）
+                    # 🔧 时间差阈值策略：仅当消息与当前时间差超过阈值时才显示时间戳。
+                    # 连续对话（阈值内）不显示，避免污染；跨时段对话显示，让AI感知时间流逝。
+                    # 同时移除了旧版的 not is_bot 限制——bot自己的回复也需要时间戳，
+                    # 否则AI无法感知自己说过的话是多久之前（如"正在和a比赛"两天后仍被当作当前状态）。
+                    # 提示词中已有"不提及时间戳"的约束，避免AI模仿时间戳格式。
+                    show_timestamp = False
+                    if include_timestamp and time_str:
+                        if timestamp_threshold_minutes <= 0:
+                            # 阈值为0：始终显示（兼容旧行为）
+                            show_timestamp = True
+                        elif hasattr(msg, "timestamp") and msg.timestamp:
+                            try:
+                                time_diff_minutes = (
+                                    time.time() - float(msg.timestamp)
+                                ) / 60
+                                show_timestamp = (
+                                    time_diff_minutes >= timestamp_threshold_minutes
+                                )
+                            except (TypeError, ValueError):
+                                show_timestamp = False
+                    if show_timestamp:
                         prefix_parts.append(f"[{time_str}]")
 
                     # 添加发送者信息（如果启用）
