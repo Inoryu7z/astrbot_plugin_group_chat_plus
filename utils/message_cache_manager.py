@@ -83,6 +83,14 @@ class MessageCacheManager:
         Returns:
             缓存后的总条数
         """
+        # 🔧 v1.2.4: 防御性校验，拒绝无效的 chat_id，防止幽灵会话产生
+        if not chat_id or not isinstance(chat_id, str) or not chat_id.strip():
+            logger.warning(
+                f"[缓存管理器] 拒绝无效的 chat_id={chat_id!r} (来源: {source})，"
+                f"跳过缓存以避免幽灵会话"
+            )
+            return 0
+
         # 初始化缓存
         if chat_id not in self.pending_messages_cache:
             self.pending_messages_cache[chat_id] = []

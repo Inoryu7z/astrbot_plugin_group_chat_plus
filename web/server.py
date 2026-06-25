@@ -753,7 +753,19 @@ h1{{color:#ff6b6b;}}p{{color:#a0a0b8;line-height:1.8;}}</style></head>
         ):
             for key in self.plugin.frequency_adjuster.check_states:
                 sessions.add(key)
-        return sessions
+        # 🔧 v1.2.4: 防御性过滤，排除无效 key（空字符串、None、纯空白等），防止幽灵会话
+        filtered = set()
+        for s in sessions:
+            if not s:
+                continue
+            s_str = str(s)
+            if not s_str.strip():
+                continue
+            if not _SAFE_SESSION_RE.match(s_str):
+                logger.debug(f"🌐 跳过不合规的会话 key: {s_str!r}")
+                continue
+            filtered.add(s_str)
+        return filtered
 
     # ==================== 认证 Handler ====================
 

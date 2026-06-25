@@ -6067,6 +6067,21 @@ class ChatPlus(Star):
                     logger.info("【反戳】已执行反戳")
                 if self.poke_trace_enabled:
                     self._register_poke_trace(chat_id, str(sender_id))
+
+                # 🔧 v1.2.4: 反戳成功后保存用户戳一戳事件到历史，避免上下文丢失
+                # 原版 hotfix.1 修复：反戳后直接 return 会跳过消息保存，导致历史记录缺失
+                try:
+                    original_msg = (event.message_str or "").strip() or "[戳一戳]"
+                    formatted_user_msg = MessageProcessor.add_metadata_to_message(
+                        event, original_msg, self.include_timestamp,
+                        self.include_sender_info, None, None,
+                        poke_info=poke_info,
+                    )
+                    await ContextManager.save_user_message(
+                        event, formatted_user_msg, self.context
+                    )
+                except Exception as user_save_err:
+                    logger.warning(f"【反戳】保存用户戳一戳事件到历史失败: {user_save_err}")
             except Exception as e:
                 logger.error(f"【反戳】执行反戳失败: {e}")
                 # 即使失败，也不影响主流程，继续正常处理

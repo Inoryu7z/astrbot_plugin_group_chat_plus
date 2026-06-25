@@ -1,5 +1,38 @@
 ##  更新日志
 
+### v1.2.4 (2026-06-25)
+
+**借鉴原版 hotfix.1/hotfix.2 改进，保留魔改版自有特性**
+
+🔧 **改进点1：AI 回复纲领行动导向重写**（移植自原版 hotfix.2）
+- 重写 `SYSTEM_REPLY_PROMPT`：首句改为"你的任务：直接生成回复内容"，明确"无需考虑该不该回复"
+- 新增【回复身份】段落：禁止 AI 输出"是否该回复""我决定这么说"等内部判断腔
+- 新增【严禁元叙述】段落：禁止"看到你@我了""注意到你在说XXX"等元叙述
+- 新增【第一重要】识别当前发送者、【上下文理解】追加消息说明、【严禁重复】、【主语与指代】等段落
+- 位置引用从"上方"改为"下方"，配合缓存友好的拼接顺序
+- `SENDER_HEADER_TEMPLATE` 标签名改为 `[系统信息-当前对话对象]`，与新提示词引用一致
+
+🔧 **改进点2：戳一戳反戳后消息保存修复**（移植自原版 hotfix.1）
+- **问题**: 反戳成功后直接 `return True` 跳过消息保存，导致用户戳一戳事件不进入历史记录，上下文丢失
+- **修复**: 在 `return True` 之前用 `add_metadata_to_message` + `save_user_message` 保存用户戳一戳事件
+
+🔧 **改进点3：主动对话 _own_task 身份识别**（移植自原版 hotfix.2）
+- **问题**: 插件重载后旧后台循环可能不退出，导致主动对话重复发送
+- **修复**: 在 `_background_check_loop` 中记录 `asyncio.current_task()` 身份，循环条件升级为 `cls._is_running and cls._background_task is _own_task`；循环结束后清理 `_is_running` 和 `_background_task`
+
+🔧 **改进点4：Web 面板幽灵会话根治**（移植自原版 hotfix.2）
+- `web/server.py` 的 `_collect_all_sessions` 新增 `_SAFE_SESSION_RE` 防御性过滤，排除空字符串、None、纯空白等无效 key
+- `message_cache_manager.py` 的 `add_to_cache` 新增 `chat_id` 防御性校验，拒绝无效 chat_id 防止幽灵会话产生
+
+📋 **评估后未移植的改进点**
+- 正则灾难性回溯修复：两版 content_filter.py 代码完全相同，实际不存在此差异
+- proactive_system_prompt 变量拆分：魔改版未拆分变量，不存在此 bug
+- 逐插件上下文追踪：复杂度高（~820行新代码）、依赖框架内部 API、与魔改版现有 `req.contexts`/`req.prompt` 全量替换冲突、单用户价值低，暂不移植
+
+**修改文件**: utils/reply_handler.py, main.py, utils/proactive_chat_manager.py, web/server.py, utils/message_cache_manager.py, metadata.yaml, CHANGELOG.md
+
+---
+
 ### v1.2.3 (2026-06-25)
 
 **修复群聊 bot 无法感知时间流逝 + 分段消息丢失问题**

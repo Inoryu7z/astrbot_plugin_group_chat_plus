@@ -2734,13 +2734,16 @@ class ProactiveChatManager:
         if cls._debug_mode:
             logger.info("🔄 [主动对话后台任务] 已启动")
 
+        # 🔧 v1.2.4: 记录当前 task 身份，防止类被重复加载后旧循环继续运行
+        _own_task = asyncio.current_task()
+
         # 🆕 v1.2.0 定期保存和衰减计时器
         last_save_time = time.time()
         last_decay_time = time.time()
         save_interval = 300  # 每5分钟保存一次
         decay_interval = 3600  # 每小时检查一次衰减
 
-        while cls._is_running:
+        while cls._is_running and cls._background_task is _own_task:
             try:
                 # 获取当前配置
                 if hasattr(config_getter, "config"):
@@ -2889,6 +2892,10 @@ class ProactiveChatManager:
                 break
             except Exception as e:
                 logger.error(f"[主动对话后台任务] 发生错误: {e}", exc_info=True)
+
+        # 🔧 v1.2.4: 循环结束后清理状态，确保重载后新循环能正常启动
+        cls._is_running = False
+        cls._background_task = None
 
         if cls._debug_mode:
             logger.info("🛑 [主动对话后台任务] 已停止")
