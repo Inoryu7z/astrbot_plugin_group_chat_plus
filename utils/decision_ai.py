@@ -3,7 +3,12 @@
 负责调用AI判断是否应该回复消息（读空气功能）
 
 作者: Him666233
-版本: v1.2.1
+版本: v1.2.5
+
+更新日志 v1.2.5:
+- 新增「决策草稿模式」：开启后决策AI判断为yes时顺带输出一份草稿回复，供回复AI参考
+- 决策AI输出格式扩展为 DECISION/DRAFT 两段式（仅在 with_draft=True 时生效）
+- 草稿通过 event.set_extra("_decision_draft", ...) 传递给 main.py
 
 更新日志 v1.2.0:
 - 新增当前时间与活跃度提示，让AI知道现在是什么时候并据此调整回复倾向
@@ -14,14 +19,22 @@
 """
 
 import asyncio
+import re
 from datetime import datetime
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from astrbot.api.all import *
 from .ai_response_filter import AIResponseFilter
 from ._session_guard import sample_guard
 
 # 详细日志开关（与 main.py 同款方式：单独用 if 控制）
 DEBUG_MODE: bool = False
+
+# 🆕 v1.2.5: 决策草稿模式相关常量
+# 决策AI输出格式：DECISION: yes/no\nDRAFT: <草稿文本>
+DRAFT_DECISION_PREFIX = "DECISION:"
+DRAFT_DRAFT_PREFIX = "DRAFT:"
+# 通过 event.set_extra 传递草稿的键名
+DECISION_DRAFT_EXTRA_KEY = "_decision_draft"
 
 
 class DecisionAI:
@@ -88,6 +101,23 @@ class DecisionAI:
     # 系统判断提示词的结束指令（单独分离，用于插入自定义提示词）
     SYSTEM_DECISION_PROMPT_ENDING = "\n请开始判断：\n"
 
+    # 🆕 v1.2.5: 决策草稿模式 - 当判断为yes时，额外输出草稿
+    # 该指令追加在 SYSTEM_DECISION_PROMPT 末尾，扩展输出格式
+    SYSTEM_DECISION_DRAFT_SUFFIX = """
+
+【决策草稿模式】（已开启）
+本次输出需包含两段，严格按以下格式：
+DECISION: yes 或 DECISION: no
+DRAFT: <若DECISION为yes，此处输出一份简短草稿回复；若DECISION为no，此处留空>
+
+⚠️ 格式要求：
+- 第一行必须以 DECISION: 开头，后接 yes 或 no（小写）
+- 第二行必须以 DRAFT: 开头
+- 判断为yes时，DRAFT后必须给出一段可直接发送的草稿回复文本（中文，符合你的人格风格，30-150字之间）
+- 判断为no时，DRAFT: 后留空即可
+- 草稿只是初稿，质量无需完美，后续会有回复AI优化
+- 不要输出多余内容、解释或思考过程"""
+
     @staticmethod
     async def should_reply(
         context: Context,
@@ -114,6 +144,8 @@ class DecisionAI:
         reply_density_hint: str = "",
         # 🔗 同发送者串行决策：前一条消息的判断结果
         sender_prev_decision_info: dict = None,
+        # 🆕 v1.2.5: 决策草稿模式开关
+        with_draft: bool = False,
     ) -> bool:
         """
         调用AI判断是否应该回复
@@ -133,9 +165,14 @@ class DecisionAI:
             time_period_info: 动态时间段配置信息
             humanize_mode_enabled: 是否开启拟人增强模式
             conversation_fatigue_info: 对话疲劳信息（连续对话轮次等）
+            with_draft: 是否启用决策草稿模式（v1.2.5新增）
 
         Returns:
             True=应该回复，False=不回复
+
+        🆕 v1.2.5: 当 with_draft=True 时，若判断为yes，会将草稿文本通过
+        event.set_extra(DECISION_DRAFT_EXTRA_KEY, draft_text) 传递给调用方。
+        调用方可在 should_reply 返回后通过 event.get_extra(DECISION_DRAFT_EXTRA_KEY, "") 读取。
         """
         sample_guard("decision")
         try:
@@ -144,6 +181,11 @@ class DecisionAI:
                     delattr(event, "_decision_ai_error")
                 except Exception:
                     event._decision_ai_error = False
+            # 🆕 v1.2.5: 清理上一次可能残留的草稿（防止跨消息污染）
+            try:
+                event.set_extra(DECISION_DRAFT_EXTRA_KEY, "")
+            except Exception:
+                pass
             # 获取AI提供商
             if provider_id:
                 provider = context.get_provider_by_id(provider_id)
@@ -316,6 +358,15 @@ class DecisionAI:
             # 动态内容（格式化消息、发送者信息、增强上下文）放在后面。
             # 这样AI服务商的前缀缓存（prefix caching）可以命中静态部分，降低调用成本。
             # 即使AI服务商不支持前缀缓存，此顺序调整也不影响功能。
+            #
+            # 🆕 v1.2.5: 决策草稿模式（with_draft=True）会在系统提示词末尾追加
+            # SYSTEM_DECISION_DRAFT_SUFFIX，要求AI按 DECISION/DRAFT 两段式输出。
+            # 注意：override 模式下不自动追加（用户完全自定义提示词），
+            # 但仍会按两段式解析输出，用户需自行在 override 提示词中说明输出格式。
+            draft_suffix = (
+                DecisionAI.SYSTEM_DECISION_DRAFT_SUFFIX if with_draft else ""
+            )
+
             if prompt_mode == "override" and extra_prompt and extra_prompt.strip():
                 full_prompt = (
                     sender_header
@@ -333,6 +384,7 @@ class DecisionAI:
                 full_prompt = (
                     sender_header
                     + DecisionAI.SYSTEM_DECISION_PROMPT
+                    + draft_suffix
                 )
 
                 if extra_prompt and extra_prompt.strip():
@@ -347,6 +399,11 @@ class DecisionAI:
                     formatted_message
                     + proactive_hint
                     + enhanced_context
+                )
+
+            if with_draft and DEBUG_MODE:
+                logger.info(
+                    "🆕 [决策草稿模式] 已开启，决策AI将输出 DECISION/DRAFT 两段式"
                 )
 
             logger.info(
@@ -370,8 +427,27 @@ class DecisionAI:
             # 🆕 v1.1.2: 过滤AI响应中的思考链标记
             ai_response = AIResponseFilter.filter_thinking_chain(ai_response)
 
-            # 解析AI的回复
-            decision = DecisionAI._parse_decision(ai_response)
+            # 🆕 v1.2.5: 决策草稿模式 - 从响应中提取草稿文本
+            draft_text = ""
+            if with_draft:
+                decision, draft_text = DecisionAI._parse_decision_with_draft(
+                    ai_response
+                )
+                if decision and draft_text:
+                    try:
+                        event.set_extra(DECISION_DRAFT_EXTRA_KEY, draft_text)
+                    except Exception:
+                        pass
+                    if DEBUG_MODE:
+                        logger.info(
+                            f"🆕 [决策草稿模式] 已提取草稿，长度: {len(draft_text)} 字符"
+                        )
+                    logger.info(
+                        f"决策AI已生成草稿回复（长度: {len(draft_text)} 字符），将传递给回复AI参考"
+                    )
+            else:
+                # 解析AI的回复
+                decision = DecisionAI._parse_decision(ai_response)
 
             if decision:
                 logger.info("决策AI判断: 应该回复这条消息 (yes)")
@@ -567,3 +643,90 @@ class DecisionAI:
         if DEBUG_MODE:
             logger.info(f"AI回复 '{ai_response}' 不明确,默认判定为不回复（谨慎模式）")
         return False
+
+    @staticmethod
+    def _parse_decision_with_draft(ai_response: str) -> Tuple[bool, str]:
+        """
+        🆕 v1.2.5: 解析决策草稿模式下的AI回复
+
+        期望格式：
+            DECISION: yes/no
+            DRAFT: <草稿文本>
+
+        解析策略：
+        1. 优先按 DECISION:/DRAFT: 前缀精准提取
+        2. 若格式异常，回退到 _parse_decision 仅判断 yes/no，草稿返回空字符串
+        3. 草稿文本会做基本清理（去除首尾空白、去掉可能的引号包裹）
+
+        Args:
+            ai_response: AI的回复文本
+
+        Returns:
+            (decision, draft_text)
+            - decision: True=应该回复，False=不回复
+            - draft_text: 草稿文本（decision为False时始终为空字符串）
+        """
+        if not ai_response:
+            return False, ""
+
+        raw = ai_response.strip()
+        # 用不区分大小写的方式定位 DECISION: 和 DRAFT: 前缀
+        # 注意：草稿文本本身可能包含换行，因此 DRAFT: 之后的内容需完整保留
+        decision_match = re.search(
+            r"DECISION\s*:\s*(yes|no|y|n|是|否)",
+            raw,
+            re.IGNORECASE,
+        )
+
+        if not decision_match:
+            # 格式不符合预期，回退到传统解析
+            if DEBUG_MODE:
+                logger.info(
+                    f"[决策草稿] 未匹配到 DECISION: 前缀，回退到传统解析。原始响应: {ai_response[:200]}"
+                )
+            return DecisionAI._parse_decision(ai_response), ""
+
+        decision_token = decision_match.group(1).lower()
+        decision = decision_token in ("yes", "y", "是")
+
+        if not decision:
+            # 判断为 no 时，DRAFT 应为空，直接返回
+            if DEBUG_MODE:
+                logger.info(
+                    f"[决策草稿] DECISION={decision_token}，判定为不回复，草稿留空"
+                )
+            return False, ""
+
+        # 提取 DRAFT: 之后的内容
+        draft_text = ""
+        draft_match = re.search(
+            r"DRAFT\s*:\s*(.*)",
+            raw,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if draft_match:
+            draft_text = draft_match.group(1).strip()
+            # 去除可能的引号包裹（AI 偶尔会用 "..." 或 「...」 包裹草稿）
+            if len(draft_text) >= 2:
+                if (
+                    (draft_text[0] == '"' and draft_text[-1] == '"')
+                    or (draft_text[0] == "'" and draft_text[-1] == "'")
+                    or (draft_text[0] == "「" and draft_text[-1] == "」")
+                    or (draft_text[0] == "“" and draft_text[-1] == "”")
+                ):
+                    draft_text = draft_text[1:-1].strip()
+
+        if not draft_text:
+            # DECISION 为 yes 但 DRAFT 为空，仍然返回 decision=True，但草稿为空
+            # 调用方应处理草稿为空的情况（视为草稿模式失效，回退到普通回复流程）
+            if DEBUG_MODE:
+                logger.info(
+                    "[决策草稿] DECISION=yes 但 DRAFT 为空，草稿模式失效，回退到普通回复"
+                )
+        else:
+            if DEBUG_MODE:
+                logger.info(
+                    f"[决策草稿] 提取到草稿（长度: {len(draft_text)} 字符）: {draft_text[:80]}..."
+                )
+
+        return True, draft_text

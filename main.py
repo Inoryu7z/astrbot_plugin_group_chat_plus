@@ -31,7 +31,12 @@
 - @消息会跳过所有判断直接回复
 
 作者: Him666233
-版本: v1.2.1
+版本: v1.2.5
+
+v1.2.5 更新内容：
+- 🆕 决策草稿模式 - 决策AI判断为yes时顺带输出一份草稿回复，注入回复AI提示词供其参考
+- 🆕 回复AI中断机制 - 回复AI可输出 [NO_REPLY] 主动中断本次回复（不发送任何内容，但用户消息正常保存）
+- 🆕 配置项 decision_draft_enabled - 默认关闭，关闭时行为与之前完全一致
 
 v1.2.1 更新内容：
 - 🆕 Web管理面板 - 全新可视化管理界面，支持JWT认证、访问日志、统计图表、IP安全管理
@@ -148,7 +153,7 @@ from .private_chat import PrivateChatMain  # 🆕 私信功能主处理模块
     "chat_plus",
     "Him666233",
     "一个以AI读空气为主的群聊聊天效果增强插件",
-    "v1.2.3",
+    "v1.2.5",
     "https://github.com/Him666233/astrbot_plugin_group_chat_plus",
 )
 class ChatPlus(Star):
@@ -204,6 +209,12 @@ class ChatPlus(Star):
         self.decision_ai_prompt_mode = config.get(
             "decision_ai_prompt_mode", "append"
         )  # 读空气AI提示词模式
+        # 🆕 v1.2.5: 决策草稿模式开关
+        # 开启后决策AI判断为yes时会顺带输出一份草稿，注入到回复AI提示词中。
+        # 回复AI可输出 [NO_REPLY] 中断本次回复，或基于草稿优化后输出最终回复。
+        self.decision_draft_enabled = config.get(
+            "decision_draft_enabled", False
+        )
 
         # === 回复AI配置 ===
         self.reply_ai_extra_prompt = config.get(
@@ -4056,6 +4067,8 @@ class ChatPlus(Star):
                 # 🆕 v1.2.1: 传递回复密度提示
                 reply_density_hint=reply_density_hint,
                 sender_prev_decision_info=sender_prev_decision_info,
+                # 🆕 v1.2.5: 决策草稿模式开关
+                with_draft=self.decision_draft_enabled,
             )
             # 🐛 修复：不要在这里删除缓存！
             # pre_decision 模式下，缓存的上下文（已植入记忆）需要在生成回复时使用
@@ -5258,6 +5271,29 @@ class ChatPlus(Star):
             message_id_for_error = None
 
         try:
+            # 🆕 v1.2.5: 决策草稿模式 - 从 event extra 读取决策AI生成的草稿
+            # 仅当 decision_draft_enabled 开启且决策AI成功生成草稿时非空
+            decision_draft_text = ""
+            if self.decision_draft_enabled:
+                try:
+                    from .utils.decision_ai import DECISION_DRAFT_EXTRA_KEY
+                    decision_draft_text = event.get_extra(
+                        DECISION_DRAFT_EXTRA_KEY, ""
+                    ) or ""
+                    if decision_draft_text:
+                        if self.debug_mode:
+                            logger.info(
+                                f"🆕 [决策草稿模式] 从决策AI获取到草稿，长度: {len(decision_draft_text)} 字符"
+                            )
+                    else:
+                        logger.info(
+                            "🆕 [决策草稿模式] 决策草稿为空（可能决策AI输出格式异常或判断为no后未生成草稿），"
+                            "本次回复将走普通流程"
+                        )
+                except Exception as e:
+                    logger.warning(f"[决策草稿模式] 读取草稿失败: {e}")
+                    decision_draft_text = ""
+
             reply_result = await ReplyHandler.generate_reply(
                 event,
                 self.context,
@@ -5269,6 +5305,7 @@ class ChatPlus(Star):
                 include_timestamp=self.include_timestamp,  # 🔧 v1.2.0: 补传时间戳开关，确保contexts格式与prompt一致
                 history_messages=history_messages,  # 🔧 修复：传递历史消息用于构建contexts
                 conversation_fatigue_info=conversation_fatigue_info,  # 🆕 v1.2.0: 传递疲劳信息
+                decision_draft=decision_draft_text,  # 🆕 v1.2.5: 传递决策草稿
             )
         except Exception as e:
             ai_error_flag = True
@@ -7627,6 +7664,49 @@ class ChatPlus(Star):
                 [comp.text for comp in result.chain if hasattr(comp, "text")]
             ).strip()
             if not reply_text:
+                return
+
+            # 🆕 v1.2.5: 决策草稿模式 - 检测回复AI主动中断（输出 [NO_REPLY]）
+            # 仅当本次请求包含草稿段落时才检测，避免误拦截正常回复
+            try:
+                from .utils.reply_handler import NO_REPLY_MARKER, PLUGIN_DRAFT_MODE_FLAG
+                is_draft_mode = bool(
+                    event.get_extra(PLUGIN_DRAFT_MODE_FLAG, False)
+                )
+            except Exception:
+                is_draft_mode = False
+                NO_REPLY_MARKER = "[NO_REPLY]"
+
+            if is_draft_mode and reply_text == NO_REPLY_MARKER:
+                logger.info(
+                    f"🆕 [决策草稿模式] 回复AI输出 [NO_REPLY]，主动中断本次回复（不发送任何内容）"
+                )
+                if self.debug_mode:
+                    logger.info(
+                        f"  message_id: {message_id[:30]}..., chat_id: {chat_id}"
+                    )
+                # 清空结果以阻止发送
+                event.clear_result()
+                # 复用重复拦截标记：跳过AI消息保存，但仍保存用户消息（与重复拦截行为一致）
+                self._duplicate_blocked_messages[message_id] = True
+                if message_id in self.raw_reply_cache:
+                    del self.raw_reply_cache[message_id]
+                # 清理已累积的回复文本（包含本次 [NO_REPLY] 标记，不应被保存为历史）
+                self._pending_bot_replies.pop(message_id, None)
+                # 清理草稿模式标记
+                try:
+                    event.set_extra(PLUGIN_DRAFT_MODE_FLAG, False)
+                except Exception:
+                    pass
+                # 保存用户消息（与重复拦截相同，防止上下文脱节）
+                try:
+                    await self._save_user_messages_on_duplicate_block(
+                        event, message_id, chat_id
+                    )
+                except Exception as save_err:
+                    logger.warning(
+                        f"[决策草稿模式] [NO_REPLY] 中断后保存用户消息失败: {save_err}"
+                    )
                 return
 
             self.raw_reply_cache[message_id] = reply_text

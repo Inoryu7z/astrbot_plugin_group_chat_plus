@@ -1,5 +1,39 @@
 ##  更新日志
 
+### v1.2.5 (2026-07-05)
+
+**新增「决策草稿模式」：决策AI与回复AI的两阶段协作**
+
+🆕 **新功能：决策草稿模式**
+- 新增配置项 `decision_draft_enabled`（默认关闭，关闭时行为与之前完全一致）
+- 开启后，决策AI判断为yes时，会顺带输出一份草拟的回复方案（DECISION/DRAFT两段式输出格式）
+- 草稿通过 `event.set_extra("_decision_draft", ...)` 传递给 main.py，再注入到回复AI的提示词中
+
+🆕 **新功能：回复AI中断机制**
+- 回复AI可输出 `[NO_REPLY]` 标记主动中断本次回复
+- 中断时不发送任何内容，但用户消息仍正常保存到历史（复用重复拦截的保存逻辑）
+- 中断时机由回复AI自主判断（例如草稿内容不合适、话题已耗尽、回复反而尴尬等场景）
+
+📝 **回复AI提示词扩展**
+- `SYSTEM_REPLY_PROMPT` 新增【参考草稿模式】段落，说明草稿使用规则与中断协议
+- 草稿以 `[系统提示-参考草稿]` 段落注入到 full_prompt 末尾，明确强调"质量可能较差，仅供参考"
+- 回复AI拥有最终决定权——可基于草稿优化调整，或完全重写，或输出 [NO_REPLY] 中断
+
+⚙️ **改动文件**
+- `utils/decision_ai.py`：`should_reply` 新增 `with_draft` 参数；新增 `SYSTEM_DECISION_DRAFT_SUFFIX` 提示词；新增 `_parse_decision_with_draft` 解析方法
+- `utils/reply_handler.py`：`generate_reply` 新增 `decision_draft` 参数；新增 `NO_REPLY_MARKER`、`PLUGIN_DRAFT_MODE_FLAG` 常量；`SYSTEM_REPLY_PROMPT` 追加【参考草稿模式】段落
+- `main.py`：读取 `decision_draft_enabled` 配置；调用 `should_reply` 时传递 `with_draft`；调用 `generate_reply` 时传递 `decision_draft`；`on_decorating_result` 中检测 `[NO_REPLY]` 并清空结果
+- `_conf_schema.json`：新增 `decision_draft_enabled` 配置项
+- `metadata.yaml` + `main.py` `@register`：版本号同步至 v1.2.5（修复了之前 v1.2.4 时 `@register` 仍为 v1.2.3 的版本号不同步问题）
+
+⚠️ **注意事项**
+- 决策草稿模式下，决策AI提示词与输出格式有调整，可能略增决策耗时
+- 回复AI有概率主动中断回复（与决策AI判断结果可能不一致），这是设计预期行为
+- `override` 提示词模式下不会自动追加 `SYSTEM_DECISION_DRAFT_SUFFIX`，用户需自行在 override 提示词中说明输出格式（仍会按 DECISION/DRAFT 两段式解析）
+- 若决策AI输出格式异常（未匹配 DECISION: 前缀），会回退到传统 yes/no 解析，草稿为空，本次回复走普通流程
+
+---
+
 ### v1.2.4 (2026-06-25)
 
 **借鉴原版 hotfix.1/hotfix.2 改进，保留魔改版自有特性**

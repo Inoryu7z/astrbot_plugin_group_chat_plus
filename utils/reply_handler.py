@@ -3,7 +3,11 @@
 负责调用AI生成回复
 
 作者: Him666233
-版本: v1.2.1
+版本: v1.2.5
+
+v1.2.5 更新：
+- 新增 decision_draft 参数：当决策草稿模式开启时，将决策AI生成的草稿注入回复提示词
+- 新增 NO_REPLY_MARKER 常量：回复AI可输出该标记主动中断本次回复（不发送任何内容）
 
 v1.2.0 更新：
 - 改用 event.request_llm() 替代 provider.text_chat()，支持其他插件的钩子注入
@@ -35,6 +39,12 @@ PLUGIN_FUNC_TOOL = "_group_chat_plus_func_tool"
 # event.request_llm() 的 prompt 参数传此短字符串，其他插件做向量检索时用的是短消息而不是完整历史
 # group_chat_plus 自身的 on_llm_request 钩子（priority=-1，最后执行）再把 req.prompt 换回完整 full_prompt
 PLUGIN_CURRENT_MESSAGE = "_group_chat_plus_current_message"
+
+# 🆕 v1.2.5: 决策草稿模式 - 回复AI主动中断回复时输出的标记
+# 当回复AI输出此标记（且仅输出此标记或前后仅有空白）时，主流程会清空 result 阻止发送
+NO_REPLY_MARKER = "[NO_REPLY]"
+# 🆕 v1.2.5: 通过 event.set_extra 标记本次回复请求包含草稿，供 on_decorating_result 检测
+PLUGIN_DRAFT_MODE_FLAG = "_group_chat_plus_draft_mode"
 
 
 class ReplyHandler:
@@ -170,6 +180,16 @@ class ReplyHandler:
 - 历史提示词附近的时间戳是当时的时间，当前真实时间以当前消息为准
 - 历史中你的回复末尾可能带有"[追加消息上下文]"标记，表示那次回复时你已参考了紧随其后保存的追加消息，
   这些追加消息虽然在历史中排在你的回复之后，但实际上是在你回复之前收到的，不要对此感到困惑
+
+【参考草稿模式】（仅当下方出现「[系统提示-参考草稿]」段落时生效）：
+- 决策AI在判断需要回复后，会顺带输出一份草稿回复方案，注入到下方「[系统提示-参考草稿]」段落
+- ⚠️ 这段草稿质量可能较差，仅供参考，不要直接照搬
+- 你可以选择：
+  ① 如果你认为实际上不回复会更好（例如草稿内容不合适、话题已耗尽、回复反而尴尬），请仅输出 [NO_REPLY] 标记，本次将不发送任何回复
+  ② 如果你认为需要回复，可以基于草稿优化调整，或完全重写，然后输出最终回复
+- 输出 [NO_REPLY] 时仅输出该标记本身，不要附加任何解释或换行
+- 决策AI已经判断过需要回复，但你拥有最终决定权——若你判断不回复更合适，输出 [NO_REPLY] 是合法且被允许的
+- 若下方未出现「[系统提示-参考草稿]」段落，忽略本条，按正常流程直接生成回复
 """
 
     # 强化版发送者识别头部模板（必须放在 prompt 最前面）
@@ -199,6 +219,7 @@ class ReplyHandler:
         include_timestamp: bool = True,
         history_messages: list = None,
         conversation_fatigue_info: dict = None,
+        decision_draft: str = "",
     ) -> ProviderRequest:
         """
         生成AI回复
@@ -214,6 +235,9 @@ class ReplyHandler:
             include_timestamp: 是否包含时间戳（默认为True）
             history_messages: 历史消息列表（AstrBotMessage对象列表，用于构建contexts）
             conversation_fatigue_info: 对话疲劳信息（用于生成收尾话语提示）
+            decision_draft: 决策AI生成的草稿回复（v1.2.5新增）。非空时会在提示词末尾
+                追加「[系统提示-参考草稿]」段落，回复AI可选择优化或输出 [NO_REPLY] 中断。
+                为空时行为与之前完全一致。
 
         Returns:
             ProviderRequest对象
@@ -272,10 +296,44 @@ class ReplyHandler:
                         f"禁止提及'疲劳'、'连续对话'、'系统提示'等元信息。\n"
                     )
 
+            # 🆕 v1.2.5: 决策草稿模式 - 构建参考草稿段落
+            # 仅当 decision_draft 非空时追加，否则行为与之前完全一致
+            draft_section = ""
+            if decision_draft and decision_draft.strip():
+                draft_section = (
+                    "\n\n[系统提示-参考草稿]\n"
+                    "系统已为你提供一段可用的草拟回复方案，交由你判断是否采用。"
+                    "⚠️ 这段草稿质量可能较差，仅供参考，不要直接照搬。\n\n"
+                    "你可以选择：\n"
+                    "1. 如果你认为实际上不回复会更好，请仅输出 [NO_REPLY] 标记，"
+                    "本次将不发送任何回复\n"
+                    "2. 如果你认为需要回复，可以基于草稿优化调整，或完全重写，"
+                    "然后输出最终回复\n\n"
+                    f"草稿内容：\n{decision_draft.strip()}\n"
+                )
+                # 标记本次请求为草稿模式，供 on_decorating_result 检测 [NO_REPLY]
+                try:
+                    event.set_extra(PLUGIN_DRAFT_MODE_FLAG, True)
+                except Exception:
+                    pass
+                logger.info(
+                    f"🆕 [决策草稿模式] 已注入参考草稿段落（草稿长度: {len(decision_draft)} 字符），"
+                    f"回复AI可输出 [NO_REPLY] 中断回复"
+                )
+            else:
+                # 清除可能残留的草稿模式标记
+                try:
+                    event.set_extra(PLUGIN_DRAFT_MODE_FLAG, False)
+                except Exception:
+                    pass
+
             # 🔧 v1.3.1: 提示词拼接顺序
             # sender_header（发送者信息）放在最最前面——AI 看到的第一行就是回复对象
             # 然后是系统提示词（行为规则），再是格式化的上下文消息。
             # 放弃前缀缓存优化（sender_header 约 300 字节），以正确性优先。
+            #
+            # 🆕 v1.2.5: 草稿段落追加在最末尾（在 fatigue_closing_prompt 之后），
+            # 让回复AI在看到完整上下文后再参考草稿。
             if prompt_mode == "override" and extra_prompt and extra_prompt.strip():
                 full_prompt = (
                     sender_header
@@ -283,6 +341,7 @@ class ReplyHandler:
                     + "\n\n"
                     + formatted_message
                     + fatigue_closing_prompt
+                    + draft_section
                 )
                 if DEBUG_MODE:
                     logger.info(
@@ -302,7 +361,11 @@ class ReplyHandler:
                         )
 
                 full_prompt += ReplyHandler.SYSTEM_REPLY_PROMPT_ENDING
-                full_prompt += formatted_message + fatigue_closing_prompt
+                full_prompt += (
+                    formatted_message
+                    + fatigue_closing_prompt
+                    + draft_section
+                )
 
             logger.info(
                 f"正在调用AI生成回复（当前发送者：{sender_name or '未知'}，ID:{sender_id}）..."
