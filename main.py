@@ -2267,12 +2267,31 @@ class ChatPlus(Star):
         self.config.save_config()
 
     async def _get_auth_token(self):
-        """获取认证token"""
-        login_url = f"http://{self.host}:{self.port}/api/auth/login"
-        login_data = {
-            "username": self.dbc["username"],
-            "password": self.dbc["password"],
-        }
+        """获取认证token
+
+        每次调用时都重新读取 dashboard 配置，避免初始化时快照的密码在
+        用户后续修改 Dashboard 密码后失效（导致 401 用户名或密码错误）。
+        """
+        # 重新读取 dashboard 配置（不再使用 __init__ 中的快照 self.dbc）
+        dbc = self.context.get_config().get("dashboard", {}) or {}
+        username = dbc.get("username")
+        password = dbc.get("password")
+        if not username or not password:
+            raise Exception(
+                "dashboard 配置缺少 username 或 password，无法登录 WebUI"
+            )
+        # 同步 host/port，以防端口被环境变量覆盖后变更
+        host = dbc.get("host", "127.0.0.1")
+        port = dbc.get("port", 6185)
+        if os.environ.get("DASHBOARD_PORT"):
+            try:
+                port = int(os.environ.get("DASHBOARD_PORT"))
+            except Exception:
+                pass
+        if host == "0.0.0.0":
+            host = "127.0.0.1"
+        login_url = f"http://{host}:{port}/api/auth/login"
+        login_data = {"username": username, "password": password}
         async with self.session.post(login_url, json=login_data) as response:
             if response.status == 200:
                 data = await response.json()
@@ -2708,7 +2727,7 @@ class ChatPlus(Star):
 
     @filter.command("gcp_reset_here")
     async def gcp_reset_here(self, event: AstrMessageEvent):
-        """重置当前会话：清空本会话的插件缓存与上下文文件，设置历史截止点（忽略重置前的平台聊天记录），然后重启 AstrBot。不影响其他会话，不会删除平台官方的对话历史。"""
+        """重置当前会话：清空本会话的插件缓存与上下文文件，设置历史截止点（忽略重置前的平台聊天记录）。不影响其他会话，不会删除平台官方的对话历史，无需重启 AstrBot。"""
         try:
             # 群聊处理开关未启用则直接忽略
             if not self.enable_group_chat:
@@ -2760,23 +2779,10 @@ class ChatPlus(Star):
                         "3. 设置历史截止点（插件将忽略重置前的平台聊天记录，避免旧消息被重新读入AI上下文）\n"
                         "\n"
                         "注意：本操作不会删除平台官方的对话历史和聊天记录，如需清除请使用平台的 /reset 指令。\n"
-                        "即将重启 AstrBot..."
+                        "重置已即时生效，无需重启 AstrBot。"
                     )
                     yield event.plain_result(f"{notice}")
                     logger.info(f"{session_str}: {notice}")
-
-                    self.config["platform_id"] = event.get_platform_id()
-                    self.config["restart_umo"] = event.unified_msg_origin
-                    self.config["restart_start_ts"] = time.time()
-                    self.config.save_config()
-                    logger.info(
-                        "重启：已记录 platform_id、restart_umo 与 restart_start_ts，准备重启"
-                    )
-                    try:
-                        await self.restart_core()
-                    except Exception as e:
-                        yield event.plain_result(f"重启失败：{e}")
-                        logger.error(f"重启失败：{e}")
                 except Exception:
                     pass
             except Exception:

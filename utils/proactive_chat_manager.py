@@ -5413,7 +5413,7 @@ class ProactiveChatManager:
             with open(state_file, "w", encoding="utf-8") as f:
                 json.dump(cleaned_states, f, ensure_ascii=False, indent=2)
 
-            logger.info(f"[状态持久化] 已保存 {len(cleaned_states)} 个群聊状态")
+            logger.debug(f"[状态持久化] 已保存 {len(cleaned_states)} 个群聊状态")
 
         except Exception as e:
             logger.error(f"[状态持久化] 保存失败: {e}")
