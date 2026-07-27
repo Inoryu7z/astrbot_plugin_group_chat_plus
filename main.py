@@ -7672,8 +7672,12 @@ class ChatPlus(Star):
             if not reply_text:
                 return
 
-            # 🆕 v1.2.5: 决策草稿模式 - 检测回复AI主动中断（输出 [NO_REPLY]）
-            # 仅当本次请求包含草稿段落时才检测，避免误拦截正常回复
+            # 🆕 v1.2.5: 检测回复AI主动中断（输出 [NO_REPLY]）
+            # 🔧 热修: 扩展为始终生效——无论是否开启草稿模式，回复AI均可输出 [NO_REPLY]
+            # 中断本次回复。判断标准：reply_text 严格等于 [NO_REPLY] 标记本身（前后可有空白）
+            # 触发场景：
+            #   1. 草稿模式下：草稿明显不合适且无更好版本
+            #   2. 非草稿模式下：回复AI识别出"明显插话场景"，回复会变成无意义插话
             try:
                 from .utils.reply_handler import NO_REPLY_MARKER, PLUGIN_DRAFT_MODE_FLAG
                 is_draft_mode = bool(
@@ -7683,9 +7687,11 @@ class ChatPlus(Star):
                 is_draft_mode = False
                 NO_REPLY_MARKER = "[NO_REPLY]"
 
-            if is_draft_mode and reply_text == NO_REPLY_MARKER:
+            # 严格匹配：仅当回复文本就是 [NO_REPLY] 标记本身时才中断（容许首尾空白）
+            if reply_text == NO_REPLY_MARKER:
+                mode_hint = "草稿模式" if is_draft_mode else "非草稿模式"
                 logger.info(
-                    f"🆕 [决策草稿模式] 回复AI输出 [NO_REPLY]，主动中断本次回复（不发送任何内容）"
+                    f"🆕 [{mode_hint}] 回复AI输出 [NO_REPLY]，主动中断本次回复（不发送任何内容）"
                 )
                 if self.debug_mode:
                     logger.info(
@@ -7711,7 +7717,7 @@ class ChatPlus(Star):
                     )
                 except Exception as save_err:
                     logger.warning(
-                        f"[决策草稿模式] [NO_REPLY] 中断后保存用户消息失败: {save_err}"
+                        f"[{mode_hint}] [NO_REPLY] 中断后保存用户消息失败: {save_err}"
                     )
                 return
 
