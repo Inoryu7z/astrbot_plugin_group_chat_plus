@@ -3000,9 +3000,13 @@ class ChatPlus(Star):
                 logger.warning("【会话重置】移除处理中标记失败", exc_info=True)
             try:
                 # 最近回复缓存（用于去重检查，避免短时间内重复回复同内容）
-                if chat_id in self.recent_replies_cache:
-                    replies_cleared = len(self.recent_replies_cache.get(chat_id, []))
-                    del self.recent_replies_cache[chat_id]
+                # 🔧 缓存键已按 适配器实例+会话 区分（多bot共用同一群时互不干扰），需按当前bot的键清除
+                _reply_cache_key = self._get_reply_cache_key(event, chat_id)
+                if _reply_cache_key in self.recent_replies_cache:
+                    replies_cleared = len(
+                        self.recent_replies_cache.get(_reply_cache_key, [])
+                    )
+                    del self.recent_replies_cache[_reply_cache_key]
 
                     logger.info(
                         "【会话重置】已清空最近回复缓存 chat_id=%s, 清理条数=%s",
@@ -5522,8 +5526,8 @@ class ChatPlus(Star):
         is_duplicate_blocked = False
         if reply_text and not is_provider_request and self.enable_duplicate_filter:
             # 获取或初始化该会话的回复缓存
-            if chat_id not in self.recent_replies_cache:
-                self.recent_replies_cache[chat_id] = []
+            if self._get_reply_cache_key(event, chat_id) not in self.recent_replies_cache:
+                self.recent_replies_cache[self._get_reply_cache_key(event, chat_id)] = []
 
             current_time = time.time()
 
@@ -5531,15 +5535,15 @@ class ChatPlus(Star):
             if self.enable_duplicate_time_limit:
                 # 清理过期的回复记录（使用配置的时效）
                 time_limit = max(60, self.duplicate_filter_time_limit)  # 最少60秒
-                self.recent_replies_cache[chat_id] = [
+                self.recent_replies_cache[self._get_reply_cache_key(event, chat_id)] = [
                     reply
-                    for reply in self.recent_replies_cache[chat_id]
+                    for reply in self.recent_replies_cache[self._get_reply_cache_key(event, chat_id)]
                     if current_time - reply.get("timestamp", 0) < time_limit
                 ]
 
             # 检查是否与最近N条回复重复（使用配置的条数，严格全等匹配）
             check_count = max(1, self.duplicate_filter_check_count)  # 最少检查1条
-            for recent_reply in self.recent_replies_cache[chat_id][-check_count:]:
+            for recent_reply in self.recent_replies_cache[self._get_reply_cache_key(event, chat_id)][-check_count:]:
                 recent_content = recent_reply.get("content", "")
                 recent_timestamp = recent_reply.get("timestamp", 0)
 
@@ -5633,11 +5637,11 @@ class ChatPlus(Star):
         # 仅记录字符串型即时回复；LLM结果在 after_message_sent 钩子中记录
         # 🔧 只在非重复消息时记录到缓存
         if reply_text and not is_provider_request and not is_duplicate_blocked:
-            if chat_id not in self.recent_replies_cache:
-                self.recent_replies_cache[chat_id] = []
+            if self._get_reply_cache_key(event, chat_id) not in self.recent_replies_cache:
+                self.recent_replies_cache[self._get_reply_cache_key(event, chat_id)] = []
 
             # 添加到缓存
-            self.recent_replies_cache[chat_id].append(
+            self.recent_replies_cache[self._get_reply_cache_key(event, chat_id)].append(
                 {"content": reply_text, "timestamp": time.time()}
             )
 
@@ -5646,15 +5650,15 @@ class ChatPlus(Star):
                 max(10, self.duplicate_filter_check_count * 2),
                 self._DUPLICATE_CACHE_SIZE_LIMIT,
             )
-            if len(self.recent_replies_cache[chat_id]) > max_cache_size:
+            if len(self.recent_replies_cache[self._get_reply_cache_key(event, chat_id)]) > max_cache_size:
                 # 丢弃最旧的消息，保留最新的
-                self.recent_replies_cache[chat_id] = self.recent_replies_cache[chat_id][
+                self.recent_replies_cache[self._get_reply_cache_key(event, chat_id)] = self.recent_replies_cache[self._get_reply_cache_key(event, chat_id)][
                     -max_cache_size:
                 ]
 
             if self.debug_mode:
                 logger.info(
-                    f"【消息过滤】已记录回复到缓存，当前缓存数: {len(self.recent_replies_cache[chat_id])}"
+                    f"【消息过滤】已记录回复到缓存，当前缓存数: {len(self.recent_replies_cache[self._get_reply_cache_key(event, chat_id)])}"
                 )
 
         # 🆕 v1.1.0: 记录AI回复（用于主动对话功能）
@@ -7765,21 +7769,21 @@ class ChatPlus(Star):
             # 清理过期缓存并进行重复检查（使用可配置参数）
             if self.enable_duplicate_filter:
                 now_ts = time.time()
-                if chat_id not in self.recent_replies_cache:
-                    self.recent_replies_cache[chat_id] = []
+                if self._get_reply_cache_key(event, chat_id) not in self.recent_replies_cache:
+                    self.recent_replies_cache[self._get_reply_cache_key(event, chat_id)] = []
 
                 # 根据配置决定是否启用时效性过滤
                 if self.enable_duplicate_time_limit:
                     time_limit = max(60, self.duplicate_filter_time_limit)
-                    self.recent_replies_cache[chat_id] = [
+                    self.recent_replies_cache[self._get_reply_cache_key(event, chat_id)] = [
                         r
-                        for r in self.recent_replies_cache[chat_id]
+                        for r in self.recent_replies_cache[self._get_reply_cache_key(event, chat_id)]
                         if now_ts - r.get("timestamp", 0) < time_limit
                     ]
 
                 # 检查是否与最近N条回复重复（使用配置的条数）
                 check_count = max(1, self.duplicate_filter_check_count)
-                for recent in self.recent_replies_cache[chat_id][-check_count:]:
+                for recent in self.recent_replies_cache[self._get_reply_cache_key(event, chat_id)][-check_count:]:
                     recent_content = recent.get("content", "")
                     recent_timestamp = recent.get("timestamp", 0)
 
@@ -7830,9 +7834,9 @@ class ChatPlus(Star):
             # 现在在检测通过后立即写入，防止并发消息通过相同检测
             if self.enable_duplicate_filter and reply_text:
                 try:
-                    if chat_id not in self.recent_replies_cache:
-                        self.recent_replies_cache[chat_id] = []
-                    self.recent_replies_cache[chat_id].append(
+                    if self._get_reply_cache_key(event, chat_id) not in self.recent_replies_cache:
+                        self.recent_replies_cache[self._get_reply_cache_key(event, chat_id)] = []
+                    self.recent_replies_cache[self._get_reply_cache_key(event, chat_id)].append(
                         {
                             "content": reply_text,  # 使用原始内容（未添加错字）
                             "timestamp": time.time(),
@@ -7843,9 +7847,9 @@ class ChatPlus(Star):
                         max(10, self.duplicate_filter_check_count * 2),
                         self._DUPLICATE_CACHE_SIZE_LIMIT,
                     )
-                    if len(self.recent_replies_cache[chat_id]) > max_cache_size:
-                        self.recent_replies_cache[chat_id] = self.recent_replies_cache[
-                            chat_id
+                    if len(self.recent_replies_cache[self._get_reply_cache_key(event, chat_id)]) > max_cache_size:
+                        self.recent_replies_cache[self._get_reply_cache_key(event, chat_id)] = self.recent_replies_cache[
+                            self._get_reply_cache_key(event, chat_id)
                         ][-max_cache_size:]
                 except Exception:
                     pass  # 缓存写入失败不影响主流程
@@ -8091,8 +8095,8 @@ class ChatPlus(Star):
                 try:
                     # 检查是否已经在 on_decorating_result 中写入过（避免重复写入）
                     already_cached = False
-                    if chat_id in self.recent_replies_cache:
-                        for recent in self.recent_replies_cache[chat_id][-3:]:
+                    if self._get_reply_cache_key(event, chat_id) in self.recent_replies_cache:
+                        for recent in self.recent_replies_cache[self._get_reply_cache_key(event, chat_id)][-3:]:
                             if (
                                 recent.get("content", "")
                                 == original_bot_reply_text.strip()
@@ -8100,9 +8104,9 @@ class ChatPlus(Star):
                                 already_cached = True
                                 break
                     if not already_cached:
-                        if chat_id not in self.recent_replies_cache:
-                            self.recent_replies_cache[chat_id] = []
-                        self.recent_replies_cache[chat_id].append(
+                        if self._get_reply_cache_key(event, chat_id) not in self.recent_replies_cache:
+                            self.recent_replies_cache[self._get_reply_cache_key(event, chat_id)] = []
+                        self.recent_replies_cache[self._get_reply_cache_key(event, chat_id)].append(
                             {
                                 "content": original_bot_reply_text,
                                 "timestamp": time.time(),
@@ -8113,10 +8117,10 @@ class ChatPlus(Star):
                             max(10, self.duplicate_filter_check_count * 2),
                             self._DUPLICATE_CACHE_SIZE_LIMIT,
                         )
-                        if len(self.recent_replies_cache[chat_id]) > max_cache_size:
+                        if len(self.recent_replies_cache[self._get_reply_cache_key(event, chat_id)]) > max_cache_size:
                             # 丢弃最旧的消息，保留最新的
-                            self.recent_replies_cache[chat_id] = (
-                                self.recent_replies_cache[chat_id][-max_cache_size:]
+                            self.recent_replies_cache[self._get_reply_cache_key(event, chat_id)] = (
+                                self.recent_replies_cache[self._get_reply_cache_key(event, chat_id)][-max_cache_size:]
                             )
                 except Exception:
                     pass
@@ -8831,9 +8835,9 @@ class ChatPlus(Star):
 
             # 记录到最近回复缓存（用于去重）
             try:
-                if chat_id not in self.recent_replies_cache:
-                    self.recent_replies_cache[chat_id] = []
-                self.recent_replies_cache[chat_id].append(
+                if self._get_reply_cache_key(event, chat_id) not in self.recent_replies_cache:
+                    self.recent_replies_cache[self._get_reply_cache_key(event, chat_id)] = []
+                self.recent_replies_cache[self._get_reply_cache_key(event, chat_id)].append(
                     {"content": original_bot_reply_text, "timestamp": time.time()}
                 )
             except Exception:
@@ -8946,7 +8950,17 @@ class ChatPlus(Star):
                 if platform_msg_id and platform_msg_id.strip():
                     # 添加平台标识，确保跨平台唯一
                     platform_name = event.get_platform_name()
-                    result_id = f"{platform_name}_{platform_msg_id}"
+                    # 🔧 修复：get_platform_name() 返回平台类型名（如 aiocqhttp），
+                    # 多个同类型适配器实例会返回相同值；同一群消息经不同 NapCat 推送时
+                    # message_id 也相同。两个bot共用同一插件时，去重键冲突会让
+                    # 第二个bot的事件被当作重复消息跳过（永远只有第一个bot回复）。
+                    # get_platform_id() 是框架保证的每个适配器实例唯一标识。
+                    platform_id = ""
+                    try:
+                        platform_id = str(event.get_platform_id() or "")
+                    except Exception:
+                        pass
+                    result_id = f"{platform_name}_{platform_id}_{platform_msg_id}"
 
             if not result_id:
                 # 回退方案：使用确定性内容哈希（不含随机/时间因子）
@@ -8958,16 +8972,24 @@ class ChatPlus(Star):
                 )
                 msg_content = event.get_message_str()[:100]  # 只取前100字符避免过长
 
+                # 🔧 回退键同样加入适配器实例ID，避免不同bot收到同一消息时哈希冲突
+                platform_name = event.get_platform_name()
+                platform_id = ""
+                try:
+                    platform_id = str(event.get_platform_id() or "")
+                except Exception:
+                    pass
+
                 # 🔧 使用秒级时间戳（取整到秒），允许同一秒内的重复推送被识别为同一消息
                 # 同时不同秒的相同内容消息仍然有不同的ID
                 timestamp_sec = int(time.time())
                 hash_input = (
-                    f"{sender_id}_{group_id}_{msg_content}_{timestamp_sec}".encode(
+                    f"{platform_name}_{platform_id}_{sender_id}_{group_id}_{msg_content}_{timestamp_sec}".encode(
                         "utf-8"
                     )
                 )
                 content_hash = hashlib.md5(hash_input).hexdigest()[:16]  # 取前16位即可
-                result_id = f"{sender_id}_{group_id}_{content_hash}"
+                result_id = f"{platform_id}_{sender_id}_{group_id}_{content_hash}"
 
             # 🔧 缓存到event对象，确保同一event跨handler返回一致的ID
             try:
@@ -8978,6 +9000,24 @@ class ChatPlus(Star):
         except Exception as e:
             # 如果生成失败，返回一个基于秒级时间戳的ID（同一秒内的重复推送会得到相同ID）
             return f"fallback_{int(time.time())}_{str(e)[:20]}"
+
+    def _get_reply_cache_key(self, event: AstrMessageEvent, chat_id: str) -> str:
+        """
+        生成回复去重缓存的键：按 适配器实例 + 会话 区分。
+
+        🔧 多bot场景：两个bot接入不同适配器实例但共用同一插件时，
+        get_platform_name() 返回相同类型名（如 aiocqhttp），导致 chat_id 相同的
+        两个bot共用同一份回复去重缓存，会互相拦截对方的回复（第二个bot回复与
+        第一个bot相同内容时被当作重复跳过）。
+        改用 get_platform_id()（框架保证的每个适配器实例唯一标识）区分。
+        """
+        try:
+            platform_id = str(event.get_platform_id() or "")
+            if platform_id:
+                return f"{platform_id}_{chat_id}"
+        except Exception:
+            pass
+        return str(chat_id)
 
     def _normalize_bare(self, s: str) -> str:
         """
