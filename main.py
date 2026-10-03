@@ -31,7 +31,11 @@
 - @消息会跳过所有判断直接回复
 
 作者: Him666233
-版本: v1.2.5
+版本: v1.2.6
+
+v1.2.6 更新内容：
+- 🔧 决策AI判断依据③ - 补上「刚明确点名了某几个成员，对方尚未回应也算」的情形
+- 🔧 决策AI判断依据④ - 新增例外：消息明确指向几名特定成员且其中不含你时，倾向no
 
 v1.2.5 更新内容：
 - 🆕 决策草稿模式 - 决策AI判断为yes时顺带输出一份草稿回复，注入回复AI提示词供其参考
@@ -153,7 +157,7 @@ from .private_chat import PrivateChatMain  # 🆕 私信功能主处理模块
     "chat_plus",
     "Him666233",
     "一个以AI读空气为主的群聊聊天效果增强插件",
-    "v1.2.5",
+    "v1.2.6",
     "https://github.com/Him666233/astrbot_plugin_group_chat_plus",
 )
 class ChatPlus(Star):
